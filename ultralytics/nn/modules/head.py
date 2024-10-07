@@ -11,7 +11,7 @@ from torch.nn.init import constant_, xavier_uniform_
 from ultralytics.utils.tal import TORCH_1_10, dist2bbox, dist2rbox, make_anchors
 
 from .block import DFL, BNContrastiveHead, ContrastiveHead, Proto
-from .conv import Conv
+from .conv import Conv, DWConv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob, linear_init
 
@@ -38,21 +38,17 @@ class Detect(nn.Module):
         self.no = nc + self.reg_max * 4  # number of outputs per anchor
         self.stride = torch.zeros(self.nl)  # strides computed during build
         c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], min(self.nc, 100))  # channels
-        self.token_h = None # token hidden size (default 64|None)
-        if self.token_h is not None:
-            self.cv2 = nn.ModuleList(
-                nn.Sequential(Conv(x, c2, 3, token_h=self.token_h),
-                            Conv(c2+16, c2, 3, token_h=self.token_h),
-                            nn.Conv2d(c2+16, 4 * self.reg_max, 1)) for x in ch
+        self.cv2 = nn.ModuleList(
+            nn.Sequential(Conv(x, c2, 3), Conv(c2, c2, 3), nn.Conv2d(c2, 4 * self.reg_max, 1)) for x in ch
+        )
+        self.cv3 = nn.ModuleList(
+            nn.Sequential(
+                nn.Sequential(DWConv(x, x, 3), Conv(x, c3, 1)),
+                nn.Sequential(DWConv(c3, c3, 3), Conv(c3, c3, 1)),
+                nn.Conv2d(c3, self.nc, 1),
             )
-            self.cv3 = nn.ModuleList(nn.Sequential(Conv(x, c3, 3, token_h=self.token_h),
-                                                Conv(c3+16, c3, 3, token_h=self.token_h),
-                                                nn.Conv2d(c3+16, self.nc, 1)) for x in ch)
-        else:
-            self.cv2 = nn.ModuleList(
-                nn.Sequential(Conv(x, c2, 3), Conv(c2, c2, 3), nn.Conv2d(c2, 4 * self.reg_max, 1)) for x in ch
-            )
-            self.cv3 = nn.ModuleList(nn.Sequential(Conv(x, c3, 3), Conv(c3, c3, 3), nn.Conv2d(c3, self.nc, 1)) for x in ch)
+            for x in ch
+        )
         self.dfl = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
 
         if self.end2end:
