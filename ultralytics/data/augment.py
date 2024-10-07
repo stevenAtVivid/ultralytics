@@ -5,6 +5,7 @@ import random
 from copy import deepcopy
 from typing import Tuple, Union
 
+import os 
 import cv2
 import numpy as np
 import torch
@@ -483,6 +484,110 @@ class BaseMixTransform:
                 text = label["texts"][int(cls)]
                 label["cls"][i] = text2id[tuple(text)]
             label["texts"] = mix_texts
+        return labels
+
+
+class Rainbow:
+    def __init__(self, p=0.5) -> None:
+        self.p = p
+
+    def __call__(self, labels):
+        if random.random() < self.p:
+            img = labels["img"]
+            overlay = img.copy()
+            w = img.shape[1]
+            h = img.shape[0]
+            # random raindow parameters
+            lines = random.randint(10, 75)
+            width = np.random.randint(int(w * 0.005), int(w * 0.02), lines)
+            x = np.random.randint(0, img.shape[1], lines)
+            color_r = np.random.randint(0, 255, (lines, 3), dtype='uint8')
+            # add random vertical rainbow stripes
+            for i in range(lines):
+                color_np = color_r[i]
+                color = ( int (color_np[ 0 ]), int (color_np [ 1 ]), int (color_np [ 2 ]))
+                cv2.line(overlay, (x[i], 0), (x[i], img.shape[0]), tuple(color), width[i])
+
+            # combine rainbows with the image
+            img = cv2.addWeighted(overlay, 0.5, img, 0.5, 0)
+            labels["img"] = np.ascontiguousarray(img)
+
+        return labels
+
+
+class CoverTrunk:
+    def __init__(self, p=0.5) -> None:
+        self.p = p
+
+    def __call__(self, labels):
+        if random.random() < self.p:
+            img = labels["img"]
+            w = img.shape[1]
+            h = img.shape[0]
+            
+            # cover configs
+            cover_height_half = int(h * 0.1 / 2)
+            cover_width_half = int(w * 0.25 / 2) 
+
+            keypoints = labels["instances"].keypoints
+            if len(keypoints) > 0:
+                for keypoint in keypoints[0]:
+                    x, y, = int(keypoint[0]), int(keypoint[1])
+                    cover_x1 = max(0, x-cover_width_half)
+                    cover_x2 = min(w, x+cover_width_half)
+                    cover_y1 = max(0, y-cover_height_half)
+                    cover_y2 = min(h, y+cover_height_half)
+                    cover = np.zeros((cover_y2-cover_y1, cover_x2-cover_x1, 3), dtype=np.uint8)
+                    img[cover_y1 : cover_y2, cover_x1 : cover_x2] = cover
+
+            labels["img"] = np.ascontiguousarray(img)
+
+        return labels
+
+
+class SwapDepth:
+    def __init__(self, swap=False, channel=2) -> None:
+        self.depth_dir = "/home/steven_vivid_machines_com/dev/ml/models/detector/preds/dam_ON_latest"
+        self.channel = channel
+        self.swap = swap
+    def __call__(self, labels):
+        if not self.swap:
+            return labels
+        img = labels["img"]
+        # Load the depth map
+        file_name = labels["im_file"]
+        for split in ["train", "val", "test"]:
+            depth_path = os.path.join(self.depth_dir, split, file_name.replace(".png", ".npy"))
+            if os.path.exists(depth_path):
+                depth = np.load(depth_path)
+                break
+        # Resize the depth map to the dimensions of the image
+        depth = cv2.resize(depth, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+        # Swap the specified channel with the depth map
+        img[:, :, self.channel] = depth
+        # Update the image in the labels dictionary
+        labels["img"] = np.ascontiguousarray(img)
+
+        return labels
+
+
+class AddToken:
+    """
+    Add an extra channel to the images, indicating whether the image belongs to the vtrellis system.
+    """
+    def __init__(self) -> None:
+        pass
+
+    def __call__(self, labels):
+        img = labels["img"]
+        # Check if classes contains a class 2 or 3 (vtrellis-only classes)
+        classes = labels["cls"]
+        vtrellis_label = np.any(np.isin(classes, [2, 3]))
+        # Add an extra channel 
+        img = np.concatenate([img, np.ones((img.shape[0], img.shape[1], 1), dtype=np.uint8) * vtrellis_label], axis=-1)
+        # Update the image in the labels dictionary
+        labels["img"] = np.ascontiguousarray(img)
+        
         return labels
 
 
@@ -1063,8 +1168,11 @@ class RandomPerspective:
 
         # Translation
         T = np.eye(3, dtype=np.float32)
+        # ==========================================================
+        # VIVID CHANGES
         T[0, 2] = random.uniform(0.5 - self.translate, 0.5 + self.translate) * self.size[0]  # x translation (pixels)
-        T[1, 2] = random.uniform(0.5 - self.translate, 0.5 + self.translate) * self.size[1]  # y translation (pixels)
+        T[1, 2] = random.uniform(0.5 - self.translate, 0.5) * self.size[1]  # y translation (pixels)
+        # ==========================================================
 
         # Combined rotation matrix
         M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
@@ -2284,6 +2392,8 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
         [
             Mosaic(dataset, imgsz=imgsz, p=hyp.mosaic),
             CopyPaste(p=hyp.copy_paste),
+            Rainbow(p=0.2),
+            CoverTrunk(p=0.2),
             RandomPerspective(
                 degrees=hyp.degrees,
                 translate=hyp.translate,
@@ -2311,6 +2421,7 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
             RandomHSV(hgain=hyp.hsv_h, sgain=hyp.hsv_s, vgain=hyp.hsv_v),
             RandomFlip(direction="vertical", p=hyp.flipud),
             RandomFlip(direction="horizontal", p=hyp.fliplr, flip_idx=flip_idx),
+            # AddToken(),
         ]
     )  # transforms
 

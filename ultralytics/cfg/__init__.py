@@ -31,6 +31,7 @@ from ultralytics.utils import (
     yaml_print,
 )
 
+ROOT = "/home/steven_vivid_machines_com/dev/ml/models/detector/utils"
 # Define valid tasks and modes
 MODES = {"train", "val", "predict", "export", "track", "benchmark"}
 TASKS = {"detect", "segment", "classify", "pose", "obb"}
@@ -246,7 +247,6 @@ def get_cfg(cfg: Union[str, Path, Dict, SimpleNamespace] = DEFAULT_CFG_DICT, ove
         - The function performs type and value checks on the configuration data.
     """
     cfg = cfg2dict(cfg)
-
     # Merge overrides
     if overrides:
         overrides = cfg2dict(overrides)

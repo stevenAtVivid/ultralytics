@@ -38,16 +38,42 @@ class Conv(nn.Module):
 
     default_act = nn.SiLU()  # default activation
 
-    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True):
+    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True, token_h=None):
         """Initialize Conv layer with given arguments including activation."""
         super().__init__()
+        if token_h is not None:
+            self.token_mlp = nn.Sequential(
+                nn.Linear(token_h, 64),
+                nn.ReLU(),
+                nn.Linear(64, 16),
+            )        
+            self.token_h = token_h
+            bn_h = c2 + 16
+        else:
+            bn_h = c2
+
         self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
-        self.bn = nn.BatchNorm2d(c2)
+        self.bn = nn.BatchNorm2d(bn_h)
         self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
 
-    def forward(self, x):
+
+    def forward(self, x, token=None):
         """Apply convolution, batch normalization and activation to input tensor."""
-        return self.act(self.bn(self.conv(x)))
+        if not hasattr(self, "token_h"):
+            return self.act(self.bn(self.conv(x)))
+        else:
+            if token is None:
+                print("Token is required for Token Conv")
+                token = torch.zeros(self.token_h).to(x.device)
+                
+            z = self.conv(x)
+            # expand token to dimensions of z
+            token = self.token_mlp(token)
+            token = token.unsqueeze(-1).unsqueeze(-1)
+            token = token.expand(-1, -1, z.shape[-2], z.shape[-1])
+            # add token as channel
+            resized_token = torch.cat((z, token), 1)
+            return self.act(self.bn(resized_token))
 
     def forward_fuse(self, x):
         """Perform transposed convolution of 2D data."""

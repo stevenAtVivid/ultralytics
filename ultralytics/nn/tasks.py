@@ -55,6 +55,7 @@ from ultralytics.nn.modules import (
     Segment,
     WorldDetect,
     v10Detect,
+    Token
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -123,7 +124,7 @@ class BaseModel(nn.Module):
             return self._predict_augment(x)
         return self._predict_once(x, profile, visualize, embed)
 
-    def _predict_once(self, x, profile=False, visualize=False, embed=None):
+    def _predict_once(self, x, profile=False, visualize=False, embed=None, token=None):
         """
         Perform a forward pass through the network.
 
@@ -314,6 +315,10 @@ class DetectionModel(BaseModel):
         self.names = {i: f"{i}" for i in range(self.yaml["nc"])}  # default names dict
         self.inplace = self.yaml.get("inplace", True)
         self.end2end = getattr(self.model[-1], "end2end", False)
+        # Add token input in the front of the model
+        # n_systems = 2
+        # self.token = Token(n_systems, 64)
+        # ch = 4
 
         # Build strides
         m = self.model[-1]  # Detect()
@@ -338,6 +343,35 @@ class DetectionModel(BaseModel):
         if verbose:
             self.info()
             LOGGER.info("")
+
+    def _predict_once(self, x, profile=False, visualize=False, embed=None):
+        if hasattr(self, "token"):
+            if x.shape[1] < 4:
+                # If for some reason the extra token channel is not added,
+                # Add a dummy channel here at test time
+                # Assumes input to be non-vtrellis
+                # TODO
+                x = torch.cat([x, torch.ones((x.shape[0], 1, x.shape[2], x.shape[3]), dtype=torch.uint8)], axis=1)
+            token = self.token(x[:, 3, 0, 0])
+        x = x[:, :3]  # remove token
+        y, dt, embeddings = [], [], []  # outputs
+        for m in self.model:
+            if m.f != -1:  # if not from previous layer
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+            if profile:
+                self._profile_one_layer(m, x, dt)
+            if hasattr(self, "token") and (isinstance(m, Detect) or isinstance(m, Pose)):
+                x = m(x, token=token)   # run
+            else:
+                x = m(x)  # run
+            y.append(x if m.i in self.save else None)  # save output
+            if visualize:
+                feature_visualization(x, m.type, m.i, save_dir=visualize)
+            if embed and m.i in embed:
+                embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
+                if m.i == max(embed):
+                    return torch.unbind(torch.cat(embeddings, 1), dim=0)
+        return x
 
     def _predict_augment(self, x):
         """Perform augmentations on input image x and return augmented inference and train outputs."""
@@ -419,9 +453,19 @@ class PoseModel(DetectionModel):
             cfg["kpt_shape"] = data_kpt_shape
         super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
 
+    def _predict_once(self, x, profile=False, visualize=False, embed=None):
+        """Perform a forward pass through the network."""
+        return super()._predict_once(x, profile, visualize, embed)
+
+
     def init_criterion(self):
         """Initialize the loss criterion for the PoseModel."""
         return v8PoseLoss(self)
+
+
+class MyPoseModel(PoseModel):
+    def __init__(self, cfg="yolov8n-mypose.yaml", ch=3, nc=None, data_kpt_shape=(None, None), verbose=True):
+        super().__init__(cfg=cfg, ch=ch, nc=nc, data_kpt_shape=data_kpt_shape, verbose=verbose)
 
 
 class ClassificationModel(BaseModel):
@@ -694,6 +738,131 @@ class Ensemble(nn.ModuleList):
         # y = torch.stack(y).mean(0)  # mean ensemble
         y = torch.cat(y, 2)  # nms ensemble, y shape(B, HW, C)
         return y, None  # inference, train output
+
+
+# ======================================================================================================================
+# VVD ADDITION
+# dpt + YOLO head
+# ======================================================================================================================
+import sys
+sys.path.append("/home/steven_vivid_machines_com/dev/ml/models/detector")
+from utils.evaluator import Evaluator
+from architectures.depth_anything_v2.depth_anything_v2.dpt import DPTHead
+
+class YOLOHead(Pose):
+    """YOLOv8 Pose head for keypoints models."""
+    def __init__(self, nc=5, kpt_shape=(1, 2), ch=(512, 1024, 1024)):
+        """Initialize YOLO network with default parameters and Convolutional Layers."""
+        super().__init__(nc, kpt_shape, ch)
+
+    def forward(self, x):
+        print([_x.shape for _x in x])
+        return super().forward(x)
+
+    def _inference(self, x):
+        print([_x.shape for _x in x])
+        return super()._inference(x) 
+
+class DptSubHead(DPTHead):
+    def __init__(self, dim, features, use_bn=False, out_channels=[256, 512, 1024, 1024], use_clstoken=False):
+        super().__init__(dim, features, use_bn, out_channels+[1024], use_clstoken)
+        self.resize_layers = torch.nn.ModuleList([
+            torch.nn.ConvTranspose2d(
+                in_channels=out_channels[0],
+                out_channels=out_channels[0],
+                kernel_size=4,
+                stride=4,
+                padding=0),
+            torch.nn.ConvTranspose2d(
+                in_channels=out_channels[1],
+                out_channels=out_channels[1],
+                kernel_size=2,
+                stride=2,
+                padding=0),
+            torch.nn.Conv2d(
+                in_channels=out_channels[2],
+                out_channels=out_channels[2],
+                kernel_size=3,
+                stride=2,
+                padding=1)
+        ])
+
+    def forward(self, out_features, patch_h, patch_w):
+        out = []
+        for i, x in enumerate(out_features):
+            if self.use_clstoken:
+                x, cls_token = x[0], x[1]
+                readout = cls_token.unsqueeze(1).expand_as(x)
+                x = self.readout_projects[i](torch.cat((x, readout), -1))
+            else:
+                x = x[0]
+            
+            x = x.permute(0, 2, 1).reshape((x.shape[0], x.shape[-1], patch_h, patch_w))
+            
+            x = self.projects[i](x)
+            x = self.resize_layers[i](x)
+            
+            out.append(x)
+
+        return out
+
+
+class DptYolo(torch.nn.Module):
+    def __init__(self):
+        super(DptYolo, self).__init__()
+        
+        self.encoder = "vits-mod"
+        self.intermediate_layer_idx = {
+            'vits-mod': [5, 8, 11],
+            'vits': [2, 5, 8, 11],
+            'vitb': [2, 5, 8, 11], 
+            'vitl': [4, 11, 17, 23], 
+            'vitg': [9, 19, 29, 39]
+        }
+        self.dpt_backbone = Evaluator("",
+                        "", 
+                        None,
+                        with_kpts=True,
+                        input_image_size=(2464, 1024),
+                        yolo_type="onnx-damv2",
+                        conf_threshold=0.2,
+                        dino_config_path="weights/GroundingDINO_SwinT_OGC.py",
+                        box_threshold=0.2,
+                        text_threshold=0.2).model.pretrained
+        self.dpt_head = DptSubHead(self.dpt_backbone.embed_dim, 256, use_bn=False, out_channels=[512, 1024, 1024], use_clstoken=False)
+        # freeze all weights
+        for param in self.dpt_backbone.parameters():
+            param.requires_grad = False
+
+    def forward(self, x):
+        patch_h, patch_w = x.shape[-2] // 14, x.shape[-1] // 14
+        features = self.dpt_backbone.get_intermediate_layers(x, self.intermediate_layer_idx[self.encoder], return_class_token=True)
+        out = self.dpt_head(features, patch_h, patch_w)
+
+        return out
+
+
+class DptYOLOPoseModel(PoseModel):
+    """YOLOv8 pose model."""
+    def __init__(self, cfg="yolov8n-pose.yaml", ch=3, nc=None, data_kpt_shape=(None, None), verbose=True):
+        super().__init__(cfg=cfg, ch=ch, nc=nc, data_kpt_shape=data_kpt_shape, verbose=verbose)
+        self.model = nn.Sequential(
+            DptYolo(),
+            YOLOHead()
+        )
+
+    def _predict_once(self, x, profile=False, visualize=False, embed=None):
+        """Perform a forward pass through the network."""
+        if isinstance(self.model, DptYolo):
+            return self.model(x)
+        else:
+            return super()._predict_once(x, profile, visualize, embed)
+
+
+    def init_criterion(self):
+        """Initialize the loss criterion for the PoseModel."""
+        return v8PoseLoss(self)
+
 
 
 # Functions ------------------------------------------------------------------------------------------------------------
@@ -993,6 +1162,11 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             ch = []
         ch.append(c2)
     return nn.Sequential(*layers), sorted(save)
+
+
+def dpt_yolo():
+    """Create a model with DPTv2 backbone and YOLO Pose head"""
+    pass
 
 
 def yaml_model_load(path):

@@ -38,23 +38,50 @@ class Detect(nn.Module):
         self.no = nc + self.reg_max * 4  # number of outputs per anchor
         self.stride = torch.zeros(self.nl)  # strides computed during build
         c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], min(self.nc, 100))  # channels
-        self.cv2 = nn.ModuleList(
-            nn.Sequential(Conv(x, c2, 3), Conv(c2, c2, 3), nn.Conv2d(c2, 4 * self.reg_max, 1)) for x in ch
-        )
-        self.cv3 = nn.ModuleList(nn.Sequential(Conv(x, c3, 3), Conv(c3, c3, 3), nn.Conv2d(c3, self.nc, 1)) for x in ch)
+        self.token_h = None # token hidden size (default 64|None)
+        if self.token_h is not None:
+            self.cv2 = nn.ModuleList(
+                nn.Sequential(Conv(x, c2, 3, token_h=self.token_h),
+                            Conv(c2+16, c2, 3, token_h=self.token_h),
+                            nn.Conv2d(c2+16, 4 * self.reg_max, 1)) for x in ch
+            )
+            self.cv3 = nn.ModuleList(nn.Sequential(Conv(x, c3, 3, token_h=self.token_h),
+                                                Conv(c3+16, c3, 3, token_h=self.token_h),
+                                                nn.Conv2d(c3+16, self.nc, 1)) for x in ch)
+        else:
+            self.cv2 = nn.ModuleList(
+                nn.Sequential(Conv(x, c2, 3), Conv(c2, c2, 3), nn.Conv2d(c2, 4 * self.reg_max, 1)) for x in ch
+            )
+            self.cv3 = nn.ModuleList(nn.Sequential(Conv(x, c3, 3), Conv(c3, c3, 3), nn.Conv2d(c3, self.nc, 1)) for x in ch)
         self.dfl = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
 
         if self.end2end:
             self.one2one_cv2 = copy.deepcopy(self.cv2)
             self.one2one_cv3 = copy.deepcopy(self.cv3)
 
-    def forward(self, x):
+    def forward(self, x, token=None):
         """Concatenates and returns predicted bounding boxes and class probabilities."""
         if self.end2end:
             return self.forward_end2end(x)
 
-        for i in range(self.nl):
-            x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
+        if not hasattr(self, "token_h") or self.token_h is None:
+            for i in range(self.nl):
+                x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
+        else:
+            for i in range(self.nl):
+                x2 = x[i]
+                x3 = x[i]
+                for m in self.cv2[i]:
+                    if isinstance(m, Conv):
+                        x2 = m(x2, token=token)
+                    else:
+                        x2 = m(x2)
+                for m in self.cv3[i]:
+                    if isinstance(m, Conv):
+                        x3 = m(x3, token=token)
+                    else:
+                        x3 = m(x3)
+                x[i] = torch.cat((x2, x3), 1)
         if self.training:  # Training path
             return x
         y = self._inference(x)
@@ -221,11 +248,11 @@ class Pose(Detect):
         c4 = max(ch[0] // 4, self.nk)
         self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.nk, 1)) for x in ch)
 
-    def forward(self, x):
+    def forward(self, x, token=None):
         """Perform forward pass through YOLO model and return predictions."""
         bs = x[0].shape[0]  # batch size
         kpt = torch.cat([self.cv4[i](x[i]).view(bs, self.nk, -1) for i in range(self.nl)], -1)  # (bs, 17*3, h*w)
-        x = Detect.forward(self, x)
+        x = Detect.forward(self, x, token=token)
         if self.training:
             return x, kpt
         pred_kpt = self.kpts_decode(bs, kpt)

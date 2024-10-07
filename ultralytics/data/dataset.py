@@ -7,6 +7,7 @@ from itertools import repeat
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
 
+import os
 import cv2
 import numpy as np
 import torch
@@ -202,7 +203,7 @@ class YOLODataset(BaseDataset):
         hyp.mixup = 0.0  # keep the same behavior as previous v8 close-mosaic
         self.transforms = self.build_transforms(hyp)
 
-    def update_labels_info(self, label):
+    def _update_labels_info(self, label):
         """
         Custom your label format here.
 
@@ -225,6 +226,98 @@ class YOLODataset(BaseDataset):
         else:
             segments = np.zeros((0, segment_resamples, 2), dtype=np.float32)
         label["instances"] = Instances(bboxes, segments, keypoints, bbox_format=bbox_format, normalized=normalized)
+        return label
+    
+    def _swap_depth(self, label):
+        """
+        Swap the specified channel with the depth map.
+        """
+        depth_dir = "/home/steven_vivid_machines_com/dev/ml/models/detector/preds/dam_ON_latest"
+        channel = 2
+
+        img = label["img"]
+        # Load the depth map
+        file_path = label["im_file"]
+        file_name = os.path.basename(file_path)
+        depth = None
+        for split in ["train", "val", "test"]:
+            depth_path = os.path.join(depth_dir, split, file_name.replace(".png", ".npy"))
+            if os.path.exists(depth_path):
+                depth = np.load(depth_path)
+                break
+        if depth is None:
+            raise ValueError(f"Depth map not found for {file_name}")
+        # Normalize the depth map to [0, 255]
+        depth = (depth - np.min(depth)) / (np.max(depth) - np.min(depth)) * 255
+        # Resize the depth map to the dimensions of the image
+        depth = cv2.resize(depth, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+        # Swap the specified channel with the depth map
+        img[:, :, channel] = depth
+        # Update the image in the labels dictionary
+        label["img"] = np.ascontiguousarray(img)
+
+        return label
+    
+    def _use_depth(self, label):
+        """
+        Swap the entire image with the depth map.
+        """
+        depth_dir = "/home/steven_vivid_machines_com/dev/ml/models/detector/preds/dam_ON_latest"
+        channel = 2
+
+        img = label["img"]
+        # Load the depth map
+        file_path = label["im_file"]
+        file_name = os.path.basename(file_path)
+        depth = None
+        for split in ["train", "val", "test"]:
+            depth_path = os.path.join(depth_dir, split, file_name.replace(".png", ".npy"))
+            if os.path.exists(depth_path):
+                depth = np.load(depth_path)
+                break
+        if depth is None:
+            print(ValueError(f"Depth map not found for {file_name}"))
+        # Normalize the depth map to [0, 255]
+        depth = (depth - np.min(depth)) / (np.max(depth) - np.min(depth)) * 255
+        # Resize the depth map to the dimensions of the image
+        depth = cv2.resize(depth, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+        # Swap the entire image with the depth map
+        depth = np.stack([depth] * 3, axis=-1).astype(np.uint8)
+        # Update the image in the labels dictionary
+        label["img"] = np.ascontiguousarray(depth)
+
+        return label
+    
+    def _add_vtrellis_token(self, label):
+        """
+        Add an extra channel for all images to differentiate between vtrellis and non-vtrellis data.
+            - vtrellis data will have a channel with value 1
+            - non-vtrellis data will have a channel with value 0
+        In particular we do the following:
+            1. Check if there exists a vtrellis-only label for this image
+            2. If so, add a channel with value 1
+            3. If not, add a channel with value 0
+        """
+        img = label["img"]
+        # Check if classes contains a class 2 or 3 (vtrellis-only classes)
+        classes = label["cls"]
+        vtrellis_label = np.any(np.isin(classes, [2, 3]))
+        # Add an extra channel 
+        img = np.concatenate([img, np.ones((img.shape[0], img.shape[1], 1), dtype=np.uint8) * vtrellis_label], axis=-1)
+        # Update the image in the labels dictionary
+        label["img"] = np.ascontiguousarray(img)
+
+        return label
+    
+    def update_labels_info(self, label):
+        """
+        Further implementation of _update_labels_info() to support swapping color channels with depth maps.
+        """
+        label = self._update_labels_info(label)
+        # label = self._swap_depth(label)
+        # label = self._use_depth(label)
+        # label = self._add_vtrellis_token(label)
+
         return label
 
     @staticmethod

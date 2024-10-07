@@ -82,8 +82,10 @@ from .transformer import (
     TransformerEncoderLayer,
     TransformerLayer,
 )
+from .token import Token
 
 __all__ = (
+    "Token",
     "Conv",
     "Conv2",
     "LightConv",

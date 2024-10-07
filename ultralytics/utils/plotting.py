@@ -980,7 +980,10 @@ def plot_images(
     mosaic = np.full((int(ns * h), int(ns * w), 3), 255, dtype=np.uint8)  # init
     for i in range(bs):
         x, y = int(w * (i // ns)), int(h * (i % ns))  # block origin
-        mosaic[y : y + h, x : x + w, :] = images[i].transpose(1, 2, 0)
+        # print(images.shape)
+        # if images.shape[1] == 4:
+        #     images[i] = images[i, :3, :, :]  # remove token channel
+        mosaic[y : y + h, x : x + w, :] = images[i, :3, :, :].transpose(1, 2, 0)
 
     # Resize (optional)
     scale = max_size / ns / max(h, w)
