@@ -45,7 +45,7 @@ class YOLO(Model):
                 "predictor": yolo.segment.SegmentationPredictor,
             },
             "pose": {
-                "model": DptYOLOPoseModel,
+                "model": PoseModel,
                 "trainer": yolo.pose.PoseTrainer,
                 "validator": yolo.pose.PoseValidator,
                 "predictor": yolo.pose.PosePredictor,
@@ -56,6 +56,12 @@ class YOLO(Model):
                 "validator": yolo.obb.OBBValidator,
                 "predictor": yolo.obb.OBBPredictor,
             },
+            "dptpose": {
+                "model": DptYOLOPoseModel,
+                "trainer": yolo.pose.DptYOLOPoseTrainer,
+                "validator": yolo.pose.PoseValidator,
+                "predictor": yolo.pose.PosePredictor,
+            }
         }
 
 

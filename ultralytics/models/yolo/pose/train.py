@@ -3,7 +3,7 @@
 from copy import copy
 
 from ultralytics.models import yolo
-from ultralytics.nn.tasks import PoseModel
+from ultralytics.nn.tasks import PoseModel, DptYOLOPoseModel
 from ultralytics.utils import DEFAULT_CFG, LOGGER
 from ultralytics.utils.plotting import plot_images, plot_results
 
@@ -77,3 +77,25 @@ class PoseTrainer(yolo.detect.DetectionTrainer):
     def plot_metrics(self):
         """Plots training/val metrics."""
         plot_results(file=self.csv, pose=True, on_plot=self.on_plot)  # save results.png
+
+
+class DptYOLOPoseTrainer(PoseTrainer):
+    """
+    A class extending the PoseTrainer class for training based on a dpt-backboned YOLO pose model.
+
+    Example:
+        ```python
+        from ultralytics.models.yolo.pose import DptYOLOPoseTrainer
+
+        args = dict(model="yolov8n-pose.pt", data="coco8-pose.yaml", epochs=3)
+        trainer = DptYOLOPoseTrainer(overrides=args)
+        trainer.train()
+        ```
+    """
+    def get_model(self, cfg=None, weights=None, verbose=True):
+        """Get pose estimation model with specified configuration and weights."""
+        model = DptYOLOPoseModel(cfg, ch=3, nc=self.data["nc"], data_kpt_shape=self.data["kpt_shape"], verbose=verbose)
+        if weights:
+            model.load(weights)
+
+        return model

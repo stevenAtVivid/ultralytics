@@ -300,7 +300,7 @@ class BaseModel(nn.Module):
 class DetectionModel(BaseModel):
     """YOLOv8 detection model."""
 
-    def __init__(self, cfg="yolov8n.yaml", ch=3, nc=None, verbose=True):  # model, input channels, number of classes
+    def __init__(self, cfg="yolov8n.yaml", ch=3, nc=None, verbose=True, model=None):  # model, input channels, number of classes
         """Initialize the YOLOv8 detection model with the given config and parameters."""
         super().__init__()
         self.yaml = cfg if isinstance(cfg, dict) else yaml_model_load(cfg)  # cfg dict
@@ -316,7 +316,11 @@ class DetectionModel(BaseModel):
         if nc and nc != self.yaml["nc"]:
             LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
             self.yaml["nc"] = nc  # override YAML value
-        self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)  # model, savelist
+        if model:
+            self.model = model
+            self.save = []
+        else:
+            self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)  # model, savelist
         self.names = {i: f"{i}" for i in range(self.yaml["nc"])}  # default names dict
         self.inplace = self.yaml.get("inplace", True)
         self.end2end = getattr(self.model[-1], "end2end", False)
@@ -449,14 +453,14 @@ class SegmentationModel(DetectionModel):
 class PoseModel(DetectionModel):
     """YOLOv8 pose model."""
 
-    def __init__(self, cfg="yolov8n-pose.yaml", ch=3, nc=None, data_kpt_shape=(None, None), verbose=True):
+    def __init__(self, cfg="yolov8n-pose.yaml", ch=3, nc=None, data_kpt_shape=(None, None), verbose=True, model=None):
         """Initialize YOLOv8 Pose model."""
         if not isinstance(cfg, dict):
             cfg = yaml_model_load(cfg)  # load model YAML
         if any(data_kpt_shape) and list(data_kpt_shape) != list(cfg["kpt_shape"]):
             LOGGER.info(f"Overriding model.yaml kpt_shape={cfg['kpt_shape']} with kpt_shape={data_kpt_shape}")
             cfg["kpt_shape"] = data_kpt_shape
-        super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
+        super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose, model=model)
 
     def _predict_once(self, x, profile=False, visualize=False, embed=None):
         """Perform a forward pass through the network."""
@@ -752,55 +756,57 @@ class Ensemble(nn.ModuleList):
 import sys
 sys.path.append("/home/steven_vivid_machines_com/dev/ml/models/detector")
 from utils.evaluator import Evaluator
-from architectures.depth_anything_v2.depth_anything_v2.dpt import DPTHead
 
-class YOLOHead(Pose):
+class DptPose(Pose):
     """YOLOv8 Pose head for keypoints models."""
-    def __init__(self, nc=5, kpt_shape=(1, 2), ch=(512, 1024, 1024)):
+    def __init__(self, nc=5, kpt_shape=(1, 2), ch=(256, 512, 1024)):
         """Initialize YOLO network with default parameters and Convolutional Layers."""
         super().__init__(nc, kpt_shape, ch)
 
     def forward(self, x):
-        print([_x.shape for _x in x])
         return super().forward(x)
 
     def _inference(self, x):
-        print([_x.shape for _x in x])
         return super()._inference(x) 
 
-class DptSubHead(DPTHead):
+
+class DptSubHead(nn.Module):
     def __init__(self, dim, features, use_bn=False, out_channels=[256, 512, 1024, 1024], use_clstoken=False):
-        super().__init__(dim, features, use_bn, out_channels+[1024], use_clstoken)
+        super(DptSubHead, self).__init__()
+        self.projects = nn.ModuleList([
+            nn.Conv2d(
+                in_channels=dim,
+                out_channels=out_channel,
+                kernel_size=1,
+                stride=1,
+                padding=0,
+            ) for out_channel in out_channels
+        ])
         self.resize_layers = torch.nn.ModuleList([
-            torch.nn.ConvTranspose2d(
+            torch.nn.Conv2d(
                 in_channels=out_channels[0],
                 out_channels=out_channels[0],
-                kernel_size=4,
-                stride=4,
+                kernel_size=2,
+                stride=1,
                 padding=0),
-            torch.nn.ConvTranspose2d(
+            torch.nn.Conv2d(
                 in_channels=out_channels[1],
                 out_channels=out_channels[1],
-                kernel_size=2,
+                kernel_size=3,
                 stride=2,
-                padding=0),
+                padding=1),
             torch.nn.Conv2d(
                 in_channels=out_channels[2],
                 out_channels=out_channels[2],
-                kernel_size=3,
-                stride=2,
-                padding=1)
+                kernel_size=5,
+                stride=4,
+                padding=2)
         ])
 
     def forward(self, out_features, patch_h, patch_w):
         out = []
         for i, x in enumerate(out_features):
-            if self.use_clstoken:
-                x, cls_token = x[0], x[1]
-                readout = cls_token.unsqueeze(1).expand_as(x)
-                x = self.readout_projects[i](torch.cat((x, readout), -1))
-            else:
-                x = x[0]
+            x = x[0]
             
             x = x.permute(0, 2, 1).reshape((x.shape[0], x.shape[-1], patch_h, patch_w))
             
@@ -813,12 +819,12 @@ class DptSubHead(DPTHead):
 
 
 class DptYolo(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, out_channels=[256, 512, 1024]):
         super(DptYolo, self).__init__()
         
         self.encoder = "vits-mod"
         self.intermediate_layer_idx = {
-            'vits-mod': [5, 8, 11],
+            'vits-mod': [2, 5, 11],
             'vits': [2, 5, 8, 11],
             'vitb': [2, 5, 8, 11], 
             'vitl': [4, 11, 17, 23], 
@@ -834,10 +840,16 @@ class DptYolo(torch.nn.Module):
                         dino_config_path="weights/GroundingDINO_SwinT_OGC.py",
                         box_threshold=0.2,
                         text_threshold=0.2).model.pretrained
-        self.dpt_head = DptSubHead(self.dpt_backbone.embed_dim, 256, use_bn=False, out_channels=[512, 1024, 1024], use_clstoken=False)
+        self.dpt_head = DptSubHead(self.dpt_backbone.embed_dim, 256, use_bn=False, out_channels=out_channels, use_clstoken=False)
         # freeze all weights
         for param in self.dpt_backbone.parameters():
             param.requires_grad = False
+        for param in self.dpt_head.parameters():
+            param.requires_grad = True
+
+        # move all layers to CPU at init
+        self.dpt_backbone = self.dpt_backbone.cpu()
+        self.dpt_head = self.dpt_head.cpu()
 
     def forward(self, x):
         patch_h, patch_w = x.shape[-2] // 14, x.shape[-1] // 14
@@ -847,22 +859,36 @@ class DptYolo(torch.nn.Module):
         return out
 
 
+class DptInput(nn.Module):
+    """Module to normalize input image for pretrained Dpt backbone"""
+    def __init__(self):
+        super(DptInput, self).__init__()
+        self.mean = torch.tensor([0.485, 0.456, 0.406]).reshape(1, 3, 1, 1)
+        self.std = torch.tensor([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1)
+
+    def forward(self, x):
+        return (x - self.mean.to(x.device)) / self.std.to(x.device)
+
+
 class DptYOLOPoseModel(PoseModel):
     """YOLOv8 pose model."""
     def __init__(self, cfg="yolov8n-pose.yaml", ch=3, nc=None, data_kpt_shape=(None, None), verbose=True):
-        super().__init__(cfg=cfg, ch=ch, nc=nc, data_kpt_shape=data_kpt_shape, verbose=verbose)
-        self.model = nn.Sequential(
-            DptYolo(),
-            YOLOHead()
+        dpt_out_channels = [64, 128, 256]
+        model = nn.Sequential(
+            DptInput(),
+            DptYolo(out_channels=dpt_out_channels),
+            DptPose(ch=dpt_out_channels)
         )
+        super().__init__(cfg=cfg, ch=ch, nc=nc, data_kpt_shape=data_kpt_shape, verbose=verbose, model=model)
 
     def _predict_once(self, x, profile=False, visualize=False, embed=None):
         """Perform a forward pass through the network."""
-        if isinstance(self.model, DptYolo):
-            return self.model(x)
+        if isinstance(self.model[1], DptYolo):
+            out = self.model(x)
+            return out
         else:
-            return super()._predict_once(x, profile, visualize, embed)
-
+            out = super()._predict_once(x, profile, visualize, embed)
+            return out
 
     def init_criterion(self):
         """Initialize the loss criterion for the PoseModel."""
@@ -1308,6 +1334,8 @@ def guess_model_task(model):
             return "pose"
         if m == "obb":
             return "obb"
+        if m == "dptpose":
+            return "dptpose"
 
     # Guess from model cfg
     if isinstance(model, dict):
@@ -1328,6 +1356,8 @@ def guess_model_task(model):
                 return "segment"
             elif isinstance(m, Classify):
                 return "classify"
+            elif isinstance(m, DptPose):
+                return "dptpose"
             elif isinstance(m, Pose):
                 return "pose"
             elif isinstance(m, OBB):
@@ -1342,6 +1372,8 @@ def guess_model_task(model):
             return "segment"
         elif "-cls" in model.stem or "classify" in model.parts:
             return "classify"
+        elif "-dptpose" in model.stem or "dptpose" in model.parts:
+            return "dptpose"
         elif "-pose" in model.stem or "pose" in model.parts:
             return "pose"
         elif "-obb" in model.stem or "obb" in model.parts:

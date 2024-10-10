@@ -40,6 +40,7 @@ TASK2DATA = {
     "segment": "coco8-seg.yaml",
     "classify": "imagenet10",
     "pose": "coco8-pose.yaml",
+    "dptpose": "coco8-pose.yaml",
     "obb": "dota8.yaml",
 }
 TASK2MODEL = {
@@ -47,6 +48,7 @@ TASK2MODEL = {
     "segment": "yolo11n-seg.pt",
     "classify": "yolo11n-cls.pt",
     "pose": "yolo11n-pose.pt",
+    "dptpose": "yolo11n-pose.pt",
     "obb": "yolo11n-obb.pt",
 }
 TASK2METRIC = {
@@ -54,6 +56,7 @@ TASK2METRIC = {
     "segment": "metrics/mAP50-95(M)",
     "classify": "metrics/accuracy_top1",
     "pose": "metrics/mAP50-95(P)",
+    "dptpose": "metrics/mAP50-95(P)",
     "obb": "metrics/mAP50-95(B)",
 }
 MODELS = {TASK2MODEL[task] for task in TASKS}
