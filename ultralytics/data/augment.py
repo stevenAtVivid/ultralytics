@@ -2418,18 +2418,18 @@ def v8_transforms(dataset, imgsz, hyp, stretch=False):
         ]
     )
 
-    pre_transform = Compose([mosaic, affine])
-    if hyp.copy_paste_mode == "flip":
-        pre_transform.insert(1, CopyPaste(p=hyp.copy_paste, mode=hyp.copy_paste_mode))
-    else:
-        pre_transform.append(
-            CopyPaste(
-                dataset,
-                pre_transform=Compose([Mosaic(dataset, imgsz=imgsz, p=hyp.mosaic), affine]),
-                p=hyp.copy_paste,
-                mode=hyp.copy_paste_mode,
-            )
-        )
+    # pre_transform = Compose([mosaic, affine])
+    # if hyp.copy_paste_mode == "flip":
+    #     pre_transform.insert(1, CopyPaste(p=hyp.copy_paste, mode=hyp.copy_paste_mode))
+    # else:
+    #     pre_transform.append(
+    #         CopyPaste(
+    #             dataset,
+    #             pre_transform=Compose([Mosaic(dataset, imgsz=imgsz, p=hyp.mosaic), affine]),
+    #             p=hyp.copy_paste,
+    #             mode=hyp.copy_paste_mode,
+    #         )
+    #     )
     flip_idx = dataset.data.get("flip_idx", [])  # for keypoints augmentation
     if dataset.use_keypoints:
         kpt_shape = dataset.data.get("kpt_shape", None)
