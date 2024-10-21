@@ -3,7 +3,7 @@
 from copy import copy
 
 from ultralytics.models import yolo
-from ultralytics.nn.tasks import PoseModel, DptYOLOPoseModel
+from ultralytics.nn.tasks import PoseModel, DptYOLOPoseModel, MultiFramePoseModel
 from ultralytics.utils import DEFAULT_CFG, LOGGER
 from ultralytics.utils.plotting import plot_images, plot_results
 
@@ -95,6 +95,28 @@ class DptYOLOPoseTrainer(PoseTrainer):
     def get_model(self, cfg=None, weights=None, verbose=True):
         """Get pose estimation model with specified configuration and weights."""
         model = DptYOLOPoseModel(cfg, ch=3, nc=self.data["nc"], data_kpt_shape=self.data["kpt_shape"], verbose=verbose)
+        if weights:
+            model.load(weights)
+
+        return model
+    
+
+class MultiFramePoseTrainer(PoseTrainer):
+    """
+    A class extending the PoseTrainer class for training based on a multi-frame YOLO pose model.
+
+    Example:
+        ```python
+        from ultralytics.models.yolo.pose import MultiFramePoseTrainer
+
+        args = dict(model="yolov8n-pose.pt", data="coco8-pose.yaml", epochs=3)
+        trainer = MultiFramePoseTrainer(overrides=args)
+        trainer.train()
+        ```
+    """
+    def get_model(self, cfg=None, weights=None, verbose=True):
+        """Get pose estimation model with specified configuration and weights."""
+        model = MultiFramePoseModel(cfg, ch=3, nc=self.data["nc"], data_kpt_shape=self.data["kpt_shape"], verbose=verbose)
         if weights:
             model.load(weights)
 

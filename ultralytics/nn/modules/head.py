@@ -272,6 +272,19 @@ class Pose(Detect):
             return y
 
 
+# =================================================================================================
+# VVD Addition
+# Multi-frame Pose Head
+# =================================================================================================
+class MultiFramePose(Pose):
+    def __init__(self, nc=80, kpt_shape=(17, 3), ch=()):
+        super().__init__(nc, kpt_shape, ch)
+
+    def forward(self, x, tminus1, tminus2):
+        """Perform forward pass and return predictions."""
+        pass
+
+
 class Classify(nn.Module):
     """YOLOv8 classification head, i.e. x(b,c1,20,20) to x(b,c2)."""
 

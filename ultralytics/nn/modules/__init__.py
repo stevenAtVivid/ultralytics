@@ -72,7 +72,7 @@ from .conv import (
     RepConv,
     SpatialAttention,
 )
-from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect
+from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect, MultiFramePose
 from .transformer import (
     AIFI,
     MLP,
@@ -88,7 +88,6 @@ from .transformer import (
 from .token import Token
 
 __all__ = (
-    "Token",
     "Conv",
     "Conv2",
     "LightConv",
@@ -158,4 +157,6 @@ __all__ = (
     "C2fCIB",
     "Attention",
     "PSA",
+    "Token",
+    "MultiFramePose",
 )

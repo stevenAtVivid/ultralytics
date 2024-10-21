@@ -60,7 +60,8 @@ from ultralytics.nn.modules import (
     Segment,
     WorldDetect,
     v10Detect,
-    Token
+    Token,
+    MultiFramePose,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -894,6 +895,75 @@ class DptYOLOPoseModel(PoseModel):
         """Initialize the loss criterion for the PoseModel."""
         return v8PoseLoss(self)
 
+
+# ======================================================================================================================
+# VVD ADDITION
+# Multi-frame vanilla
+# ======================================================================================================================
+class Tracker(nn.Module):
+    def __init__(self, ch=()):
+        """
+        Initialize the Tracker module.
+        This is a network that takes in YOLO backbone outputs from previous frames and aggregates them
+        to feed into the current frame's YOLO detection head.
+        Different aggregation architecture could is provided:
+            - Simple MLP
+            - LSTM
+            - Transformer
+
+        Parameters:
+            ch (tuple): Number of channels in the YOLO backbone outputs.
+        """
+        super(Tracker, self).__init__()
+        self.nl = len(ch)  # number of detection layers
+
+    def forward(self, x):
+        """
+        Forward pass of the Tracker module.
+
+        Parameters:
+            x (list): YOLO backbone output (3 layers specified by the YOLO head).
+
+        Returns:
+            x (torch.Tensor): Aggregated output to feed into the current frame's YOLO detection head.
+        """
+        x_out = []
+        for i in range(self.nl):
+            x_out.append(x[i])
+            print(x_out[i].shape)
+
+        return x_out
+
+
+class MultiFramePoseModel(PoseModel):
+    """YOLOv8 pose model."""
+    def __init__(self, cfg="yolov8n-pose.yaml", ch=3, nc=None, data_kpt_shape=(None, None), verbose=True):
+        super().__init__(cfg=cfg, ch=ch, nc=nc, data_kpt_shape=data_kpt_shape, verbose=verbose)
+        self.tracker = Tracker(ch=(15, 18, 21))
+
+    def _predict_once(self, x, profile=False, visualize=False, embed=None):
+        """Perform a forward pass through the network."""
+        x = x[:, :3]  # remove token
+        y, dt, embeddings, z = [], [], [], []  # outputs
+        for m in self.model:
+            if m.f != -1:  # if not from previous layer
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+            if profile:
+                self._profile_one_layer(m, x, dt)
+            if hasattr(self, "tracker") and isinstance(m, Pose):
+                x = self.tracker(x)    # multi-frame tracker module. Aggregates backbone output.
+                x = m(x)   # run
+            else:
+                x = m(x)  # run
+            y.append(x if m.i in self.save else None)  # save output
+            if visualize:
+                feature_visualization(x, m.type, m.i, save_dir=visualize)
+            if embed and m.i in embed:
+                embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
+                if m.i == max(embed):
+                    return torch.unbind(torch.cat(embeddings, 1), dim=0)
+                
+        return x
 
 
 # Functions ------------------------------------------------------------------------------------------------------------

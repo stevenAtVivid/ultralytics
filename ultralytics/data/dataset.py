@@ -64,6 +64,8 @@ class YOLODataset(BaseDataset):
         self.data = data
         assert not (self.use_segments and self.use_keypoints), "Can not use both segments and keypoints."
         super().__init__(*args, **kwargs)
+        print(self.labels)
+        input()
 
     def cache_labels(self, path=Path("./labels.cache")):
         """
